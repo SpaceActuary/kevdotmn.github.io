@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Twin Cities Choropleth Map</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+            background-color: #f5f5f5;
+        }
+
+        #map {
+            height: 700px;
+            width: 100%;
+            border: 2px solid #333;
+            border-radius: 8px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        .controls {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .legend {
+            background: rgba(255, 255, 255, 0.9);
+            padding: 10px;
+            border-radius: 5px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin: 2px 0;
+        }
+
+        .legend-color {
+            width: 20px;
+            height: 15px;
+            margin-right: 8px;
+            border: 1px solid #333;
+        }
+
+        .bar-chart {
+            pointer-events: none;
+        }
+
+        .area-label {
+            font-weight: bold;
+            font-size: 12px;
+            text-anchor: middle;
+            pointer-events: none;
+            fill: #333;
+            stroke: white;
+            stroke-width: 2;
+            paint-order: stroke;
+        }
+
+        button {
+            background-color: #007cba;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            margin-right: 10px;
+        }
+
+        button:hover {
+            background-color: #005a87;
+        }
+
+        .loading {
+            color: #007cba;
+            font-style: italic;
+        }
+
+        .error {
+            color: #d32f2f;
+            font-weight: bold;
+        }
+
+        .success {
+            color: #388e3c;
+            font-weight: bold;
+        }
+
+        .status {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 5px;
+            background-color: #f0f0f0;
+        }
+    </style>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
+    <script>
+        console.log('Turf loaded:', typeof turf !== 'undefined');
+    </script>
+</head>
+
+<body>
+    <div class="controls">
+        <h2>Twin Cities Puzzle Pint Location Survey Results</h2>
+
+        <button onclick="toggleLabels()">Toggle Labels</button>
+        <button onclick="toggleCharts()">Toggle Bar Charts</button>
+
+        <div id="status" class="status"></div>
+    </div>
+    <div id="map"></div>
+
+    <script>
+        // ===== HARDCODED FILE PATH =====
+        // Update this path to point to your GeoJSON file
+        const GEOJSON_FILE_PATH = './twin-cities-municipalities.geojson';
+
+        // ===== CONFIGURATION SECTION =====
+
+        // Define how to group municipalities into suburb categories
+        const municipalityGroupings = {
+            'Minneapolis': ['Minneapolis'],
+            'St. Paul': ['Saint Paul', 'St. Paul'],
+            'North Suburbs': ['Blaine', 'Coon Rapids', 'Anoka', 'Ramsey', 'Andover', 'Ham Lake', 'Mounds View', 'Spring Lake Park', 'Champlin'],
+            'Northwest Suburbs': [
+                'Maple Grove', 'Plymouth', 'Fridley', 'Brooklyn Center', 'Crystal', 'Brooklyn Park', 'Medicine Lake',
+                'New Hope', 'Hilltop', 'Robbinsdale', 'Golden Valley', 'St. Anthony', 'Osseo', 'Columbia Heights'],
+            'Northeast Suburbs': ['Roseville', 'Shoreview', 'New Brighton', 'Arden Hills', 'Falcon Heights', 'Lauderdale'],
+            'Southeast Suburbs': [
+                'Woodbury', 'Cottage Grove', 'Inver Grove Heights', 'Lilydale', 'Mendota', 'Sunfish Lake', 'St. Paul Park',
+                'South St. Paul', 'West St. Paul', 'Mendota Heights', 'Newport', 'Grey Cloud Island Twp.'],
+            'Southwest Suburbs': ['Edina', 'Bloomington', 'Richfield', 'St. Louis Park', 'Eden Prairie', 'Fort Snelling (unorg.)'],
+            'Western Suburbs': ['Minnetonka', 'Wayzata', 'Hopkins', 'Orono', 'Long Lake', 'Medina', 'Hamel'],
+            'Eastern Suburbs': [
+                'Oakdale', 'Stillwater', 'Maplewood', 'Little Canada', 'Gem Lake', 'Rice Lake', 'North Oaks', 'Willernie',
+                'North St. Paul', 'Vadnais Heights', 'White Bear Lake', 'White Bear Twp.', 'Mahtomedi', 'Lake Elmo', 'Grant', 'Dellwood', 'Birchwood Village', 'Pine Springs'
+            ],
+            'Southern Suburbs': ['Eagan', 'Burnsville', 'Apple Valley', 'Savage', 'Prior Lake', 'Lakeville', 'Rosemount']
+        };
+
+        // Ratings data - EDIT THIS TABLE
+        // Format: [ratings_1, ratings_2, ratings_3, ratings_4, ratings_5]
+        const ratingsData = {
+            'Minneapolis': [0, 1, 1, 2, 22],
+            'St. Paul': [0, 2, 6, 7, 11],
+            'North Suburbs': [3, 14, 3, 1, 5],
+            'Northwest Suburbs': [2, 8, 5, 2, 9],
+            'Northeast Suburbs': [3, 5, 5, 5, 8],
+            'Southeast Suburbs': [4, 11, 3.5, 3.5, 4],
+            'Southwest Suburbs': [0, 2, 4, 9, 11],
+            'Western Suburbs': [2, 5, 6, 6, 7],
+            'Eastern Suburbs': [7, 8, 3, 2, 5],
+            'Southern Suburbs': [4, 9, 6.5, 1.5, 5],
+        };
+
+        // ===== END CONFIGURATION SECTION =====
+
+        // Initialize map
+        const map = L.map('map').setView([44.9537, -93.2650], 10);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+
+        // Store map layers and data
+        let geoJsonData = null;
+        let groupedFeatures = {};
+        let areaLayers = {};
+        let labelLayers = {};
+        let chartLayers = {};
+        let showLabels = true;
+        let showCharts = true;
+
+        // Status display
+        function updateStatus(message, type = 'info') {
+            const statusDiv = document.getElementById('status');
+            statusDiv.innerHTML = message;
+            statusDiv.className = `status ${type}`;
+        }
+
+        // Process GeoJSON data and group features
+        function processGeoJSONData() {
+            if (!geoJsonData) {
+                console.error("No geoJson data available")
+                return;
+            }
+
+            groupedFeatures = {};
+
+            // Initialize groups
+            Object.keys(municipalityGroupings).forEach(group => {
+                groupedFeatures[group] = [];
+            });
+
+            // Group features by municipality
+            geoJsonData.features.forEach(feature => {
+                const municipalityName = feature.properties.NAME ||
+                    feature.properties.name ||
+                    feature.properties.CITY ||
+                    feature.properties.city ||
+                    feature.properties.MUNICIPALITY ||
+                    feature.properties.municipality ||
+                    feature.properties.CTU_NAME ||
+                    feature.properties.ctu_name;
+
+                if (!municipalityName) {
+                    console.warn('Feature has no municipality name:', feature);
+                    return;
+                }
+
+                // Find which group this municipality belongs to
+                let grouped = false;
+                let groupFound = "";
+                for (const [groupName, municipalities] of Object.entries(municipalityGroupings)) {
+                    if (municipalities.some(m =>
+                        municipalityName.toLowerCase() === m.toLowerCase()
+                    )) {
+                        groupedFeatures[groupName].push(feature);
+                        grouped = true;
+                        groupFound = groupName;
+                        break;
+                    }
+                }
+
+                if (grouped) {
+                    console.info(`Municipality "${municipalityName}" is in group "${groupFound}"`);
+                } else {
+                    console.warn(`Municipality "${municipalityName}" not found in any group`);
+                }
+            });
+
+            // Log grouping results
+            console.log('Grouped features:', groupedFeatures);
+            updateMap();
+        }
+
+        // Calculate weighted average for coloring
+        function calculateWeightedAverage(ratings) {
+            const totalRatings = ratings.reduce((sum, count) => sum + count, 0);
+            if (totalRatings === 0) return 3; // Default to neutral
+
+            const weightedSum = ratings.reduce((sum, count, index) => sum + count * (index + 1), 0);
+            return weightedSum / totalRatings;
+        }
+
+        // Get color based on weighted average (1=red, 3=white, 5=green)
+        function getColor(average) {
+            const colors = [
+                [255, 0, 0],     // Red at 1
+                [255, 128, 128], // Light red at 2
+                [255, 255, 255], // White at 3
+                [128, 255, 128], // Light green at 4
+                [0, 255, 0]      // Green at 5
+            ];
+
+            const pos = (average - 1) * (colors.length - 1) / 4;
+            const i = Math.floor(pos);
+            const f = pos - i;
+
+            const [r1, g1, b1] = colors[i];
+            const [r2, g2, b2] = colors[i + 1] || colors[i];
+
+            const r = Math.round(r1 + (r2 - r1) * f);
+            const g = Math.round(g1 + (g2 - g1) * f);
+            const b = Math.round(b1 + (b2 - b1) * f);
+
+            return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+        }
+
+        // Color the areas based on ratings
+        function colorAreas() {
+            // Clear existing layers
+            Object.keys(areaLayers).forEach(key => {
+                map.removeLayer(areaLayers[key]);
+            });
+            areaLayers = {};
+
+            if (!geoJsonData) {
+                console.log("colorAreas - no geoJsonData")
+                return;
+            } else {
+                console.log("updateMap", geoJsonData)
+            }
+            if (!geoJsonData) return;
+
+            Object.entries(groupedFeatures).forEach(([groupName, features]) => {
+                if (features.length === 0) {
+                    console.log("no features");
+                    return;
+                }
+
+                const ratings = ratingsData[groupName] || [0, 0, 1, 0, 0];
+                const average = calculateWeightedAverage(ratings);
+                const color = getColor(average);
+
+                // Create unified outline for the group
+                let bufferedPolygons = features.map(feature => {
+                    return turf.buffer(feature, 0.001, { units: 'degrees' }); // adjust buffer size as needed
+                });
+
+                let union = bufferedPolygons.reduce((acc, polygon) => {
+                    return acc ? turf.union(acc, polygon) : polygon;
+                });
+
+                // Add the unified outline to map
+                const unifiedLayer = L.geoJSON(union, {
+                    style: {
+                        color: '#333',           // outline color
+                        weight: 2,              // outline width
+                        fillColor: color,       // use the same color logic
+                        fillOpacity: 0.7
+                    }
+                });
+
+                // Add popup with group rating info to the unified layer
+                const totalRatings = ratings.reduce((sum, count) => sum + count, 0);
+                unifiedLayer.bindPopup(`
+                    <strong>${groupName}</strong><br>
+                    Average Rating: ${average.toFixed(2)}<br>
+                    Total Ratings: ${totalRatings}<br>
+                    5★: ${ratings[4]}<br>
+                    4★: ${ratings[3]}<br>
+                    3★: ${ratings[2]}<br>
+                    2★: ${ratings[1]}<br>
+                    1★: ${ratings[0]}
+                `);
+
+                const layerKey = `${groupName}_unified`;
+                areaLayers[layerKey] = unifiedLayer;
+                unifiedLayer.addTo(map);
+                console.log(`Added unified layer "${layerKey}" for group "${groupName}"`);
+            });
+        }
+
+        // Calculate centroid of multiple features
+        function calculateGroupCentroid(features) {
+            if (features.length === 0) return null;
+
+            let totalLat = 0;
+            let totalLng = 0;
+            let count = 0;
+
+            features.forEach(feature => {
+                if (feature.geometry.type === 'Polygon') {
+                    const coords = feature.geometry.coordinates[0];
+                    coords.forEach(coord => {
+                        totalLng += coord[0];
+                        totalLat += coord[1];
+                        count++;
+                    });
+                } else if (feature.geometry.type === 'MultiPolygon') {
+                    feature.geometry.coordinates.forEach(polygon => {
+                        polygon[0].forEach(coord => {
+                            totalLng += coord[0];
+                            totalLat += coord[1];
+                            count++;
+                        });
+                    });
+                }
+            });
+
+            if (count === 0) return null;
+            return [totalLat / count, totalLng / count];
+        }
+
+        // Add labels at group centroids
+        function addLabels() {
+            // Clear existing labels
+            Object.keys(labelLayers).forEach(key => {
+                map.removeLayer(labelLayers[key]);
+            });
+            labelLayers = {};
+
+            if (!showLabels || !geoJsonData) return;
+
+            Object.entries(groupedFeatures).forEach(([groupName, features]) => {
+                if (features.length === 0) return;
+
+                const centroid = calculateGroupCentroid(features);
+                if (!centroid) return;
+
+                const label = L.divIcon({
+                    html: `<div style="font-weight: bold; font-size: 12px; text-align: center; color: #333; text-shadow: 1px 1px 2px white;">${groupName}</div>`,
+                    iconSize: [120, 20],
+                    iconAnchor: [60, 10],
+                    className: 'area-label-icon'
+                });
+
+                const marker = L.marker(centroid, { icon: label });
+                labelLayers[groupName] = marker;
+                marker.addTo(map);
+            });
+        }
+
+        // Add bar charts above group centroids
+        function addBarCharts() {
+            // Clear existing charts
+            Object.keys(chartLayers).forEach(key => {
+                map.removeLayer(chartLayers[key]);
+            });
+            chartLayers = {};
+
+            if (!showCharts || !geoJsonData) return;
+
+            Object.entries(groupedFeatures).forEach(([groupName, features]) => {
+                if (features.length === 0) return;
+
+                const ratings = ratingsData[groupName] || [0, 0, 1, 0, 0];
+                const centroid = calculateGroupCentroid(features);
+                if (!centroid) return;
+
+                // Position chart above the centroid
+                const chartCenter = [centroid[0] + 0.02, centroid[1]];
+
+                const maxRating = 10;
+                const barWidth = 6;
+                const maxHeight = 30;
+                const spacing = 1;
+
+                let svgContent = '<svg width="40" height="25" style="overflow: visible;">';
+
+                ratings.forEach((count, index) => {
+                    const height = maxRating > 0 ? (count / maxRating) * maxHeight : 0;
+                    const x = index * (barWidth + spacing);
+                    const y = maxHeight - height;
+
+                    // Color bars by rating (1=red, 5=green)
+                    const colors = ['#ff4444', '#ff8844', '#ffaa44', '#88ff44', '#44ff44'];
+
+                    svgContent += `<rect x="${x}" y="${y}" width="${barWidth}" height="${height}" fill="${colors[index]}" stroke="#333" stroke-width="0.5"/>`;
+                });
+
+                svgContent += '</svg>';
+
+                const chartIcon = L.divIcon({
+                    html: svgContent,
+                    iconSize: [40, 25],
+                    iconAnchor: [20, 25],
+                    className: 'bar-chart-icon'
+                });
+
+                const chartMarker = L.marker(chartCenter, { icon: chartIcon });
+                chartLayers[groupName] = chartMarker;
+                chartMarker.addTo(map);
+            });
+        }
+
+        // Update entire map
+        function updateMap() {
+            if (!geoJsonData) {
+                updateStatus('No GeoJSON data available.', 'error');
+                return;
+            }
+
+            colorAreas();
+            addLabels();
+            addBarCharts();
+
+            // Fit map to data bounds
+            // if (geoJsonData.features.length > 0) {
+            //     const group = new L.featureGroup(Object.values(areaLayers));
+            //     map.fitBounds(group.getBounds().pad(0.1));
+            // }
+        }
+
+        // Toggle functions
+        function toggleLabels() {
+            showLabels = !showLabels;
+            addLabels();
+        }
+
+        function toggleCharts() {
+            showCharts = !showCharts;
+            addBarCharts();
+        }
+
+        // Add legend
+        function addLegend() {
+            const legend = L.control({ position: 'bottomright' });
+            legend.onAdd = function (map) {
+                const div = L.DomUtil.create('div', 'legend');
+                div.innerHTML = `
+                    <strong>Rating Scale</strong><br>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background-color: #ff0000;"></div>
+                        <span>1.0 - Very Poor</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background-color: #ff8080;"></div>
+                        <span>2.0 - Poor</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background-color: #ffffff;"></div>
+                        <span>3.0 - Average</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background-color: #80ff80;"></div>
+                        <span>4.0 - Good</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background-color: #00ff00;"></div>
+                        <span>5.0 - Excellent</span>
+                    </div>
+                `;
+                return div;
+            };
+            legend.addTo(map);
+        }
+
+        async function loadGeoJsonAndProcess() {
+            try {
+                const response = await fetch('./twin-cities-municipalities.geojson');
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                geoJsonData = await response.json();
+
+                // Now that geojsonData is loaded, run your dependent code
+                console.log('GeoJSON data:', geoJsonData);
+
+                processGeoJSONData()
+
+            } catch (error) {
+                console.error('Error loading or processing GeoJSON:', error);
+                document.getElementById('status').innerText = 'Error loading GeoJSON.';
+            }
+        }
+        // Initialize map and legend when page loads
+        addLegend();
+        // Call the async function to start the process
+        loadGeoJsonAndProcess();
+    </script>
+</body>
+
+</html>
